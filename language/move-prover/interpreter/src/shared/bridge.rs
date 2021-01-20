@@ -51,7 +51,7 @@ fn adapt_move_vm_change_set_internal<S: MoveStorage>(
                     None => adapted.publish_resource(addr, tag, new_val).unwrap(),
                     // modification is only added to change_set if the values actually change
                     Some(old_val) => {
-                        if new_val != old_val {
+                        if new_val != old_val.into_owned() {
                             adapted.publish_resource(addr, tag, new_val).unwrap();
                         }
                     }

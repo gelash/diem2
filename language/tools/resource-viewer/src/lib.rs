@@ -22,6 +22,7 @@ use move_core_types::{
 };
 use move_vm_runtime::data_cache::MoveStorage;
 use std::{
+    borrow::Cow,
     collections::btree_map::BTreeMap,
     convert::TryInto,
     fmt::{Display, Formatter},
@@ -99,6 +100,7 @@ impl<'a> MoveValueAnnotator<'a> {
             .get_resource(addr, tag)
             .map_err(|e: PartialVMError| e.finish(Location::Undefined).into_vm_status())
             .ok()?
+            .map(|bytes| bytes.into_owned())
     }
 
     pub fn view_access_path(
@@ -324,7 +326,7 @@ impl MoveStorage for NullStateView {
         &self,
         _address: &AccountAddress,
         _tag: &StructTag,
-    ) -> PartialVMResult<Option<Vec<u8>>> {
+    ) -> PartialVMResult<Option<Cow<[u8]>>> {
         Ok(None)
     }
 }
