@@ -847,7 +847,10 @@ impl VMExecutor for DiemVM {
             ))
         });
 
-        // let output = Self::execute_block_and_keep_vm_status(transactions, state_view)?;
+        // // Sequential execution
+        // let sequential_output = Self::execute_block_and_keep_vm_status(transactions.clone(), state_view)?;
+
+        // Parallel execution
         let mut cache = StateViewCache::new(state_view);
 
         let signature_verified_block: Vec<PreprocessedTransaction>;
@@ -861,10 +864,54 @@ impl VMExecutor for DiemVM {
                 .collect();
         }
 
-        let output = crate::parallel_executor::parallel_transaction_executor::ParallelTransactionExecutor::new()
+        let parallel_output = crate::parallel_executor::parallel_transaction_executor::ParallelTransactionExecutor::new()
             .execute_transactions_parallel(signature_verified_block, &mut cache)?;
 
-        Ok(output
+        // assert_eq!(sequential_output, parallel_output);
+
+        Ok(parallel_output
+            .into_iter()
+            .map(|(_vm_status, txn_output)| txn_output)
+            .collect())
+    }
+
+    fn execute_block_correctness_test(
+        transactions: Vec<Transaction>,
+        state_view: &dyn StateView,
+    ) -> Result<Vec<TransactionOutput>, VMStatus> {
+        fail_point!("move_adapter::execute_block", |_| {
+            Err(VMStatus::Error(
+                StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+            ))
+        });
+
+        // Sequential execution
+        let sequential_output = Self::execute_block_and_keep_vm_status(transactions.clone(), state_view)?;
+
+        // Parallel execution
+        let mut cache = StateViewCache::new(state_view);
+
+        let signature_verified_block: Vec<PreprocessedTransaction>;
+        {
+            // Verify the signatures of all the transactions in parallel.
+            // This is time consuming so don't wait and do the checking
+            // sequentially while executing the transactions.
+            signature_verified_block = transactions
+                .into_par_iter()
+                .map(preprocess_transaction)
+                .collect();
+        }
+
+        let parallel_output = crate::parallel_executor::parallel_transaction_executor::ParallelTransactionExecutor::new()
+            .execute_transactions_parallel(signature_verified_block, &mut cache)?;
+
+        assert_eq!(sequential_output.len(), parallel_output.len());
+        for i in 0..sequential_output.len() {
+            assert_eq!(sequential_output[i], parallel_output[i]);
+        }
+        println!("Parallel execution output identical as sequential execution!");
+
+        Ok(parallel_output
             .into_iter()
             .map(|(_vm_status, txn_output)| txn_output)
             .collect())

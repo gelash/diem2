@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use diem_types::{
-    transaction::{TransactionOutput, TransactionStatus},
-    write_set::WriteSet,
+    transaction::TransactionOutput,
 };
 use move_core_types::vm_status::VMStatus;
 use once_cell::sync::OnceCell;
@@ -45,12 +44,12 @@ impl OutcomeArray {
         }
     }
 
-    pub fn get_stats(&self) -> (usize, usize) {
-        return (
-            self.success_num.load(Ordering::Relaxed),
-            self.failure_num.load(Ordering::Relaxed),
-        );
-    }
+    // pub fn get_stats(&self) -> (usize, usize) {
+    //     return (
+    //         self.success_num.load(Ordering::Relaxed),
+    //         self.failure_num.load(Ordering::Relaxed),
+    //     );
+    // }
 
     pub fn get_all_results(
         self,

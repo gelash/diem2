@@ -162,6 +162,11 @@ pub trait VMExecutor: Send {
         transactions: Vec<Transaction>,
         state_view: &dyn StateView,
     ) -> Result<Vec<TransactionOutput>, VMStatus>;
+
+    fn execute_block_correctness_test(
+        transactions: Vec<Transaction>,
+        state_view: &dyn StateView,
+    ) -> Result<Vec<TransactionOutput>, VMStatus>;
 }
 
 /// Get the AccessPath to a resource stored under `address` with type name `tag`

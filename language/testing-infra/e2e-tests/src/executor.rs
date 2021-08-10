@@ -292,6 +292,18 @@ impl FakeExecutor {
         )
     }
 
+    pub fn execute_block_correctness_test(
+        &self,
+        txn_block: Vec<SignedTransaction>,
+    ) -> Result<Vec<TransactionOutput>, VMStatus> {
+        self.execute_transaction_block_correctness_test(
+            txn_block
+                .into_iter()
+                .map(Transaction::UserTransaction)
+                .collect(),
+        )
+    }
+
     /// Alternate form of 'execute_block' that keeps the vm_status before it goes into the
     /// `TransactionOutput`
     pub fn execute_block_and_keep_vm_status(
@@ -346,6 +358,53 @@ impl FakeExecutor {
         }
 
         let output = DiemVM::execute_block(txn_block, &self.data_store);
+        if let Some(logger) = &self.executed_output {
+            logger.log(format!("{:?}\n", output).as_str());
+        }
+
+        // dump serialized transaction output after execution, if tracing
+        if let Some(trace_dir) = &self.trace_dir {
+            match &output {
+                Ok(results) => {
+                    let trace_output_dir = trace_dir.join(TRACE_DIR_OUTPUT);
+                    for res in results {
+                        let output_seq = Self::trace(trace_output_dir.as_path(), res);
+                        trace_map.2.push(output_seq);
+                    }
+                }
+                Err(e) => {
+                    let mut error_file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(trace_dir.join(TRACE_FILE_ERROR))
+                        .unwrap();
+                    error_file.write_all(e.to_string().as_bytes()).unwrap();
+                }
+            }
+            let trace_meta_dir = trace_dir.join(TRACE_DIR_META);
+            Self::trace(trace_meta_dir.as_path(), &trace_map);
+        }
+        output
+    }
+
+    pub fn execute_transaction_block_correctness_test(
+        &self,
+        txn_block: Vec<Transaction>,
+    ) -> Result<Vec<TransactionOutput>, VMStatus> {
+        let mut trace_map = TraceSeqMapping::default();
+
+        // dump serialized transaction details before execution, if tracing
+        if let Some(trace_dir) = &self.trace_dir {
+            let trace_data_dir = trace_dir.join(TRACE_DIR_DATA);
+            trace_map.0 = Self::trace(trace_data_dir.as_path(), self.get_state_view());
+            let trace_input_dir = trace_dir.join(TRACE_DIR_INPUT);
+            for txn in &txn_block {
+                let input_seq = Self::trace(trace_input_dir.as_path(), txn);
+                trace_map.1.push(input_seq);
+            }
+        }
+
+        let output = DiemVM::execute_block_correctness_test(txn_block, &self.data_store);
         if let Some(logger) = &self.executed_output {
             logger.log(format!("{:?}\n", output).as_str());
         }

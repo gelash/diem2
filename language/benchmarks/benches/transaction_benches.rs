@@ -17,10 +17,18 @@ fn peer_to_peer<M: Measurement + 'static>(c: &mut Criterion<M>) {
     });
 }
 
+fn parallel_execution_correctness_test<M: Measurement + 'static>(c: &mut Criterion<M>) {
+    c.bench_function("parallel_execution_correctness_test", |b| {
+        let bencher = TransactionBencher::new(any_with::<P2PTransferGen>((1_000, 1_000_000)));
+        bencher.bench_correctness_test(b)
+    });
+}
+
 criterion_group!(
     name = txn_benches;
     config = wall_time_measurement().sample_size(10);
-    targets = peer_to_peer
+    targets = peer_to_peer,
+    parallel_execution_correctness_test
 );
 
 criterion_main!(txn_benches);

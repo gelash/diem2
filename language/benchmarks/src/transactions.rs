@@ -69,6 +69,22 @@ where
             BatchSize::LargeInput,
         )
     }
+
+    /// Runs the bencher.
+    pub fn bench_correctness_test<M: Measurement>(&self, b: &mut Bencher<M>) {
+        b.iter_batched(
+            || {
+                TransactionBenchState::with_size(
+                    &self.strategy,
+                    self.num_accounts,
+                    self.num_transactions,
+                )
+            },
+            |state| state.execute_correctness_test(),
+            // The input here is the entire list of signed transactions, so it's pretty large.
+            BatchSize::LargeInput,
+        )
+    }
 }
 
 struct TransactionBenchState {
@@ -144,6 +160,15 @@ impl TransactionBenchState {
         // to assert correctness.
         self.executor
             .execute_block(self.transactions)
+            .expect("VM should not fail to start");
+    }
+
+    /// Executes this state in a single block.
+    fn execute_correctness_test(self) {
+        // The output is ignored here since we're just testing transaction performance, not trying
+        // to assert correctness.
+        self.executor
+            .execute_block_correctness_test(self.transactions)
             .expect("VM should not fail to start");
     }
 }

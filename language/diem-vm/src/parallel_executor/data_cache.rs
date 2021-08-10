@@ -13,10 +13,10 @@ use move_core_types::{
     language_storage::{ModuleId, StructTag},
 };
 use move_vm_runtime::data_cache::MoveStorage;
-use mvhashmap::MVHashMap;
+use mvhashmap::MultiVersionHashMap;
 use std::{borrow::Cow, collections::HashSet, convert::AsRef, thread, time::Duration};
 
-pub struct VersionedDataCache(MVHashMap<AccessPath, Vec<u8>>);
+pub struct VersionedDataCache(MultiVersionHashMap<AccessPath, Vec<u8>>);
 
 pub struct VersionedStateView<'view> {
     version: usize,
@@ -28,66 +28,80 @@ const ONE_MILLISEC: Duration = Duration::from_millis(10);
 
 impl VersionedDataCache {
     pub fn new(write_sequence: Vec<(AccessPath, usize)>) -> (usize, Self) {
-        let (max_dependency_length, mv_hashmap) = MVHashMap::new_from_parallel(write_sequence);
+        let (max_dependency_length, mv_hashmap) = MultiVersionHashMap::new_from_parallel(write_sequence);
         (max_dependency_length, VersionedDataCache(mv_hashmap))
     }
 
-    pub fn set_skip_all(&self, version: usize, estimated_writes: impl Iterator<Item = AccessPath>) {
+    // returns (max depth, avg depth) of static and dynamic hashmap
+    pub fn get_depth(&self) -> ((usize, usize), (usize, usize)) {
+        self.as_ref().get_depth()
+    }
+
+    pub fn set_skip_all(&self, version: usize, retry_num: usize, estimated_writes: HashSet<AccessPath>) {
         // Put skip in all entires.
         for w in estimated_writes {
             // It should be safe to unwrap here since the MVMap was construted using
             // this estimated writes. If not it is a bug.
-            self.as_ref().skip(&w, version).unwrap();
+            self.as_ref().skip(&w, version, retry_num).unwrap();
         }
     }
 
+    pub fn set_dirty_to_static(&self, version: usize, retry_num: usize, write_set: HashSet<AccessPath>) {
+        for w in write_set {
+            // It should be safe to unwrap here since the MVMap was construted using
+            // this estimated writes. If not it is a bug.
+            self.as_ref().set_dirty_to_static(&w, version, retry_num).unwrap();
+        }
+    }
+
+    pub fn set_dirty_to_dynamic(&self, version: usize, retry_num: usize, write_set: HashSet<AccessPath>) {
+        for w in write_set {
+            // It should be safe to unwrap here since the MVMap was dynamic
+            self.as_ref().set_dirty_to_dynamic(&w, version, retry_num).unwrap();
+        }
+    }
+
+    // Apply the writes to both static and dynamic mvhashmap
     pub fn apply_output(
         &self,
         output: &TransactionOutput,
         version: usize,
+        retry_num: usize,
         estimated_writes: impl Iterator<Item = AccessPath>,
     ) -> Result<(), ()> {
+        // First get all non-estimated writes
+        let estimated_writes: HashSet<AccessPath> = estimated_writes.collect();
         if !output.status().is_discarded() {
-            // First make sure all outputs have entries in the MVMap
-            let estimated_writes_hs: HashSet<_> = estimated_writes.collect();
-            for (k, _) in output.write_set() {
-                if !estimated_writes_hs.contains(k) {
-                    println!("Missing entry: {:?}", k);
-
-                    // Put skip in all entires.
-                    self.set_skip_all(version, estimated_writes_hs.into_iter());
-                    return Err(());
-                }
-            }
-
-            // We are sure all entries are present -- now update them all
             for (k, v) in output.write_set() {
                 let val = match v {
                     WriteOp::Deletion => None,
                     WriteOp::Value(data) => Some(data.clone()),
                 };
-
-                // Safe because we checked that the entry exists
-                self.as_ref().write(k, version, val).unwrap();
+                // Write estimated writes to static mvhashmap, and write non-estimated ones to dynamic mvhashmap
+                if estimated_writes.contains(k) {
+                    self.as_ref().write_to_static(k, version, retry_num, val).unwrap();
+                } else {
+                    self.as_ref().write_to_dynamic(k, version, retry_num, val).unwrap();
+                }
             }
 
             // If any entries are not updated, write a 'skip' flag into them
-            for w in estimated_writes_hs {
+            for w in estimated_writes {
                 // It should be safe to unwrap here since the MVMap was construted using
                 // this estimated writes. If not it is a bug.
                 self.as_ref()
-                    .skip_if_not_set(&w, version)
+                    .skip_if_not_set(&w, version, retry_num)
                     .expect("Entry must exist.");
             }
         } else {
-            self.set_skip_all(version, estimated_writes);
+            self.set_skip_all(version, retry_num, estimated_writes);
         }
         Ok(())
     }
 }
 
-impl AsRef<MVHashMap<AccessPath, Vec<u8>>> for VersionedDataCache {
-    fn as_ref(&self) -> &MVHashMap<AccessPath, Vec<u8>> {
+impl AsRef<MultiVersionHashMap<AccessPath, Vec<u8>>> for VersionedDataCache {
+    fn as_ref(&self) -> &MultiVersionHashMap<AccessPath, Vec<u8>> {
         &self.0
     }
 }
@@ -105,18 +119,11 @@ impl<'view> VersionedStateView<'view> {
         }
     }
 
-    pub fn will_read_block(&self, access_path: &AccessPath) -> bool {
+    // Return Some(version) when reading access_path is blocked by transaction of id=version, otherwise return None
+    // Read from both static and dynamic mvhashmap
+    pub fn will_read_from_both_block_return_version(&self, access_path: &AccessPath) -> Option<usize> {
         let read = self.placeholder.as_ref().read(access_path, self.version);
-        if let Err(Some(_)) = read {
-            return true;
-        }
-        return false;
-    }
-
-    // Return Some(version) when reading access_path is blcked by transaction of id=version, otherwise return None
-    pub fn will_read_block_return_version(&self, access_path: &AccessPath) -> Option<usize> {
-        let read = self.placeholder.as_ref().read(access_path, self.version);
-        if let Err(Some(version)) = read {
+        if let Err(Some((version, _))) = read {
             return Some(version);
         }
         return None;
@@ -137,8 +144,8 @@ impl<'view> VersionedStateView<'view> {
             }
 
             // Read is a success
-            if let Ok(data) = read {
-                return Ok(data.as_ref().map(Cow::from));
+            if let Ok((data, _, _)) = read {
+                return Ok(data.map(Cow::from));
             }
 
             loop_iterations += 1;
@@ -153,6 +160,29 @@ impl<'view> VersionedStateView<'view> {
     fn get_bytes(&self, access_path: &AccessPath) -> PartialVMResult<Option<Vec<u8>>> {
         self.get_bytes_ref(access_path)
             .map(|opt| opt.map(Cow::into_owned))
+    }
+
+    // Return a (version, retry_num) pair, if the read returns a value or dependency
+    // Otherwise return None
+    // flag=true if no read-dependency
+    pub fn get_single_read_version(&self, access_path: &AccessPath) -> (bool, Option<(usize, usize)>) {
+        // reads may return Ok((Option<Vec<u8>>, version, retry_num) when there is value and no read dependency
+        // or Err(Some<Version>) when there is read dependency
+        // or Err(None) when there is no value and no read dependency
+        match self.placeholder.as_ref().read(access_path, self.version) {
+            Ok((_, version, retry_num)) => return (true, Some((version, retry_num))),
+            Err(Some((version, retry_num))) => return (false, Some((version, retry_num))),
+            Err(None) => return (true, None),
+        }
+    }
+
+    // Return a vector of (version, retry_num) pair, for each read in the readset
+    pub fn get_reads_version_vec(&self, reads: impl Iterator<Item = AccessPath>) -> Vec<(bool, Option<(usize, usize)>)> {
+        let mut result_vec = Vec::new();
+        for read in reads {
+            result_vec.push(self.get_single_read_version(&read));
+        }
+        return result_vec;
     }
 }
 
