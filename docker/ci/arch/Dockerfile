@@ -1,5 +1,5 @@
 # while using circle we'll use circle's base image.
-FROM archlinux:base-devel-20210516.0.23009@sha256:0c30701e3d1d5e4f38b456a3d6835833cd161a5188aafafc0417990015038633 AS setup_ci_arch
+FROM archlinux:base-devel-20221225.0.113672@sha256:73d72b6f85966e914d59d3e856f589e5c59664417a16218cb2f025e99efb3222 AS setup_ci_arch
 
 WORKDIR /diem
 COPY rust-toolchain /diem/rust-toolchain
